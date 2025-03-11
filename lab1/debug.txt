@@ -1,0 +1,55 @@
+psarski@LAPTOK:~/sysopy/operating-systems-course/lab1$ make
+gcc -Wall -std=c17 -g -o countdown countdown.c
+psarski@LAPTOK:~/sysopy/operating-systems-course/lab1$ gdb countdown
+GNU gdb (Ubuntu 15.0.50.20240403-0ubuntu1) 15.0.50.20240403-git
+Copyright (C) 2024 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
+
+--Type <RET> for more, q to quit, c to continue without paging--c
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from countdown...
+(gdb) break 5
+Breakpoint 1 at 0x115e: file countdown.c, line 5.
+(gdb) run
+Starting program: /home/psarski/sysopy/operating-systems-course/lab1/countdown 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+
+Breakpoint 1, main () at countdown.c:5
+5               printf("%d\n", i);
+(gdb) print i
+$1 = 10
+(gdb) continue
+Continuing.
+10
+
+Breakpoint 1, main () at countdown.c:5
+5               printf("%d\n", i);
+(gdb) print i
+$2 = 9
+(gdb) delete 1
+(gdb) continue
+Continuing.
+9
+8
+7
+6
+5
+4
+3
+2
+1
+0
+[Inferior 1 (process 3093) exited normally]
+(gdb) quit
+psarski@LAPTOK:~/sysopy/operating-systems-course/lab1$
