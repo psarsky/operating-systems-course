@@ -6,7 +6,7 @@ int collatz_conjecture(int input) {
     return 3 * input + 1;
 }
 
-int test_collatz_conjecture(int input, int max_iter, int *steps) {
+int test_collatz_convergence(int input, int max_iter, int *steps) {
     int count = 0;
     while (input != 1 && count < max_iter) {
         steps[count++] = input;
@@ -16,5 +16,5 @@ int test_collatz_conjecture(int input, int max_iter, int *steps) {
         steps[count++] = 1;
         return count;
     }
-    return -1;
+    return 0;
 }
