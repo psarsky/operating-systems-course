@@ -1,0 +1,22 @@
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -pthread
+TARGET_SERVER = server
+TARGET_CLIENT = client
+SOURCE_SERVER = server.c
+SOURCE_CLIENT = client.c
+
+.PHONY: all clean test
+
+all: $(TARGET_SERVER) $(TARGET_CLIENT)
+
+$(TARGET_SERVER): $(SOURCE_SERVER)
+	$(CC) $(CFLAGS) -o $(TARGET_SERVER) $(SOURCE_SERVER)
+
+$(TARGET_CLIENT): $(SOURCE_CLIENT)
+	$(CC) $(CFLAGS) -o $(TARGET_CLIENT) $(SOURCE_CLIENT)
+
+clean:
+	rm -f $(TARGET_SERVER) $(TARGET_CLIENT)
+
+test: all
+	./$(TARGET_SERVER) 8000
