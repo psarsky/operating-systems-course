@@ -17,10 +17,10 @@
 
 // Client structure
 typedef struct {
-    int socket;
+    struct sockaddr_in addr;
     char name[MAX_NAME_LEN];
     int active;
-    pthread_t thread;
+    time_t last_seen;
 } client_t;
 
 // Client array and mutex for synchronization
@@ -47,7 +47,18 @@ int find_client_by_name(const char* name) {
     return -1;
 }
 
-void handle_list_command(int client_socket) {
+int find_client_by_addr(struct sockaddr_in* addr) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].active && 
+            clients[i].addr.sin_addr.s_addr == addr->sin_addr.s_addr &&
+            clients[i].addr.sin_port == addr->sin_port) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void handle_list_command(struct sockaddr_in* client_addr) {
     char response[MAX_MSG_LEN] = "CLIENTS: ";
     pthread_mutex_lock(&clients_mutex);
     
@@ -64,7 +75,7 @@ void handle_list_command(int client_socket) {
     
     pthread_mutex_unlock(&clients_mutex);
     strcat(response, "\n");
-    send(client_socket, response, strlen(response), 0);
+    sendto(server_socket, response, strlen(response), 0, (struct sockaddr*)client_addr, sizeof(*client_addr));
 }
 
 void handle_2all_command(const char* sender_name, const char* message) {
@@ -78,7 +89,8 @@ void handle_2all_command(const char* sender_name, const char* message) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].active && strcmp(clients[i].name, sender_name) != 0) {
-            send(clients[i].socket, full_message, strlen(full_message), 0);
+            sendto(server_socket, full_message, strlen(full_message), 0, 
+                    (struct sockaddr*)&clients[i].addr, sizeof(clients[i].addr));
         }
     }
     pthread_mutex_unlock(&clients_mutex);
@@ -95,51 +107,105 @@ void handle_2one_command(const char* sender_name, const char* target_name, const
     pthread_mutex_lock(&clients_mutex);
     int target_index = find_client_by_name(target_name);
     if (target_index != -1) {
-        send(clients[target_index].socket, full_message, strlen(full_message), 0);
+        sendto(server_socket, full_message, strlen(full_message), 0, 
+                (struct sockaddr*)&clients[target_index].addr, sizeof(clients[target_index].addr));
     } else {
         char error_message[MAX_MSG_LEN];
         snprintf(error_message, sizeof(error_message), "Client %s not found\n", target_name);
-        send(clients[find_client_by_name(sender_name)].socket, error_message, strlen(error_message), 0);
+        int sender_index = find_client_by_name(sender_name);
+        if (sender_index != -1) {
+            sendto(server_socket, error_message, strlen(error_message), 0, 
+                    (struct sockaddr*)&clients[sender_index].addr, sizeof(clients[sender_index].addr));
+        }
     }
     pthread_mutex_unlock(&clients_mutex);
 }
 
 void remove_client(int client_index) {
-    pthread_mutex_lock(&clients_mutex);
     if (clients[client_index].active) {
-        close(clients[client_index].socket);
         clients[client_index].active = 0;
         printf("Client %s disconnected\n", clients[client_index].name);
         memset(clients[client_index].name, 0, MAX_NAME_LEN);
     }
-    pthread_mutex_unlock(&clients_mutex);
 }
 
-// Thread function to handle client
-void* handle_client(void* arg) {
-    int client_index = *(int*)arg;
-    free(arg);
-    
-    int client_socket = clients[client_index].socket;
+// Thread function to handle UDP messages
+void* handle_messages(void* arg) {
+    (void)arg;
     char buffer[MAX_MSG_LEN];
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
     
     while (server_running) {
         memset(buffer, 0, sizeof(buffer));
-        int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+        int bytes_received = recvfrom(server_socket, buffer, sizeof(buffer) - 1, 0, 
+                                    (struct sockaddr*)&client_addr, &client_len);
         
         if (bytes_received <= 0) {
+            if (server_running) {
+                continue;
+            }
             break;
         }
         
         buffer[strcspn(buffer, "\n")] = 0;
         
+        pthread_mutex_lock(&clients_mutex);
+        int client_index = find_client_by_addr(&client_addr);
+        
+        // If this is a new client registration
+        if (client_index == -1 && strncmp(buffer, "REGISTER ", 9) == 0) {
+            char* client_name = buffer + 9;
+            
+            // Find free slot
+            int slot = find_free_slot();
+            if (slot == -1) {
+                pthread_mutex_unlock(&clients_mutex);
+                sendto(server_socket, "Server full\n", strlen("Server full\n"), 0, 
+                        (struct sockaddr*)&client_addr, sizeof(client_addr));
+                continue;
+            }
+            
+            // Check if name is already taken
+            if (find_client_by_name(client_name) != -1) {
+                pthread_mutex_unlock(&clients_mutex);
+                sendto(server_socket, "Name already taken\n", strlen("Name already taken\n"), 0, 
+                        (struct sockaddr*)&client_addr, sizeof(client_addr));
+                continue;
+            }
+            
+            // Add client
+            clients[slot].addr = client_addr;
+            strcpy(clients[slot].name, client_name);
+            clients[slot].active = 1;
+            clients[slot].last_seen = time(NULL);
+            
+            printf("New client: %s (%s:%d)\n", client_name, 
+                    inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            
+            sendto(server_socket, "Connection successful\n", strlen("Connection successful\n"), 0, 
+                    (struct sockaddr*)&client_addr, sizeof(client_addr));
+            pthread_mutex_unlock(&clients_mutex);
+            continue;
+        }
+        
+        if (client_index == -1) {
+            pthread_mutex_unlock(&clients_mutex);
+            continue;
+        }
+        
+        clients[client_index].last_seen = time(NULL);
+        
         printf("Received from %s: %s\n", clients[client_index].name, buffer);
         
         if (strncmp(buffer, "LIST", 4) == 0) {
-            handle_list_command(client_socket);
+            pthread_mutex_unlock(&clients_mutex);
+            handle_list_command(&client_addr);
         }
         else if (strncmp(buffer, "2ALL ", 5) == 0) {
-            handle_2all_command(clients[client_index].name, buffer + 5);
+            char* sender_name = clients[client_index].name;
+            pthread_mutex_unlock(&clients_mutex);
+            handle_2all_command(sender_name, buffer + 5);
         }
         else if (strncmp(buffer, "2ONE ", 5) == 0) {
             char* space = strchr(buffer + 5, ' ');
@@ -147,19 +213,27 @@ void* handle_client(void* arg) {
                 *space = '\0';
                 char* target_name = buffer + 5;
                 char* message = space + 1;
-                handle_2one_command(clients[client_index].name, target_name, message);
+                char* sender_name = clients[client_index].name;
+                pthread_mutex_unlock(&clients_mutex);
+                handle_2one_command(sender_name, target_name, message);
+            } else {
+                pthread_mutex_unlock(&clients_mutex);
             }
         }
         else if (strncmp(buffer, "STOP", 4) == 0) {
-            break;
+            remove_client(client_index);
+            pthread_mutex_unlock(&clients_mutex);
         }
         else if (strncmp(buffer, "ALIVE_RESPONSE", 14) == 0) {
             // Client responded to ping
+            pthread_mutex_unlock(&clients_mutex);
             continue;
+        }
+        else {
+            pthread_mutex_unlock(&clients_mutex);
         }
     }
     
-    remove_client(client_index);
     return NULL;
 }
 
@@ -172,7 +246,8 @@ void* alive_checker(void* arg) {
         pthread_mutex_lock(&clients_mutex);
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].active) {
-                send(clients[i].socket, "ALIVE\n", strlen("ALIVE\n"), 0);
+                sendto(server_socket, "ALIVE\n", strlen("ALIVE\n"), 0, 
+                        (struct sockaddr*)&clients[i].addr, sizeof(clients[i].addr));
             }
         }
         pthread_mutex_unlock(&clients_mutex);
@@ -199,8 +274,8 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     memset(clients, 0, sizeof(clients));
     
-    // Create server socket
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    // Create server socket - UDP
+    server_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (server_socket == -1) {
         perror("socket");
         return 1;
@@ -223,75 +298,19 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Start listening
-    if (listen(server_socket, MAX_CLIENTS) == -1) {
-        perror("listen");
-        close(server_socket);
-        return 1;
-    }
-    
     printf("Server listening on port %d\n", port);
     
     // Thread for pinging clients
     pthread_t alive_thread;
     pthread_create(&alive_thread, NULL, alive_checker, NULL);
     
+    // Thread for handling messages
+    pthread_t message_thread;
+    pthread_create(&message_thread, NULL, handle_messages, NULL);
+    
+    // Keep main thread alive
     while (server_running) {
-        struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
-        
-        int client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_len);
-        if (client_socket == -1) {
-            if (server_running) {
-                perror("accept");
-            }
-            continue;
-        }
-        
-        // Receive client name
-        char client_name[MAX_NAME_LEN];
-        int bytes_received = recv(client_socket, client_name, sizeof(client_name) - 1, 0);
-        if (bytes_received <= 0) {
-            close(client_socket);
-            continue;
-        }
-        client_name[bytes_received] = '\0';
-        client_name[strcspn(client_name, "\n")] = 0;
-        
-        // Find free slot
-        pthread_mutex_lock(&clients_mutex);
-        int slot = find_free_slot();
-        if (slot == -1) {
-            pthread_mutex_unlock(&clients_mutex);
-            send(client_socket, "Server full\n", strlen("Server full\n"), 0);
-            close(client_socket);
-            continue;
-        }
-        
-        // Check if name is already taken
-        if (find_client_by_name(client_name) != -1) {
-            pthread_mutex_unlock(&clients_mutex);
-            send(client_socket, "Name already taken\n", strlen("Name already taken\n"), 0);
-            close(client_socket);
-            continue;
-        }
-        
-        // Add client
-        clients[slot].socket = client_socket;
-        strcpy(clients[slot].name, client_name);
-        clients[slot].active = 1;
-        pthread_mutex_unlock(&clients_mutex);
-        
-        printf("New client: %s (%s:%d)\n", client_name, 
-                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-        
-        send(client_socket, "Connection successful\n", strlen("Connection successful\n"), 0);
-        
-        // Create thread for client
-        int* client_index = malloc(sizeof(int));
-        *client_index = slot;
-        pthread_create(&clients[slot].thread, NULL, handle_client, client_index);
-        pthread_detach(clients[slot].thread);
+        sleep(1);
     }
     
     close(server_socket);
